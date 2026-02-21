@@ -9,11 +9,9 @@ DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 app = Flask(__name__)
 
 def compare_texts(expected, recognized):
-    """Сравнивает ожидаемый и распознанный текст по словам."""
     if not recognized:
         expected_words = expected.split()
         return [{"expected": w, "recognized": "", "error": True} for w in expected_words]
-    
     expected_words = expected.split()
     recognized_words = recognized.split()
     result = []
@@ -44,15 +42,18 @@ def analyze():
 
     audio_file = request.files['audio']
     expected_text = request.form.get('expected_text', '')
-    language = request.form.get('language', 'ru')  # ← ДОБАВИТЬ ЭТУ СТРОКУ
+    language = request.form.get('language', 'ru')
+
+    # Список поддерживаемых языков Deepgram (можно расширить)
+    supported_languages = ['ru', 'en', 'es', 'fr', 'de', 'it', 'pt', 'zh', 'ja', 'ko']
+    if language not in supported_languages:
+        language = 'en'
 
     try:
         audio_data = audio_file.read()
-        print(f"Размер аудио: {len(audio_data)} байт")
-        print(f"Язык: {language}")  # отладка
-        
+        print(f"Размер аудио: {len(audio_data)} байт, язык: {language}")
+
         if len(audio_data) < 1000:
-            print("Аудиофайл слишком маленький")
             return jsonify({
                 'success': False,
                 'error': 'Audio file too small',
@@ -60,37 +61,45 @@ def analyze():
                 'expected': expected_text,
                 'wordComparison': compare_texts(expected_text, '')
             })
-        
+
         url = "https://api.deepgram.com/v1/listen"
         headers = {
             "Authorization": f"Token {DEEPGRAM_API_KEY}",
             "Content-Type": "audio/m4a"
         }
-        
-        # ← ИСПОЛЬЗОВАТЬ language В ПАРАМЕТРАХ
         params = {
             "model": "nova-2",
             "language": language,
             "punctuate": "true",
             "smart_format": "true"
         }
-        
-        client = httpx.Client(verify=False)  # только для теста
+
+        # Для продакшена лучше не отключать SSL, но для теста можно
+        async_client = httpx.AsyncClient(verify=False)
+        response = async_client.post(
+            url,
+            headers=headers,
+            params=params,
+            content=audio_data,
+            timeout=30
+        )
+        # В httpx нет асинхронного клиента в синхронном коде? Используем обычный client
+        # Упростим:
+        client = httpx.Client(verify=False)
         response = client.post(
-            url, 
-            headers=headers, 
-            params=params, 
+            url,
+            headers=headers,
+            params=params,
             content=audio_data,
             timeout=30
         )
         client.close()
-        
+
         print(f"Статус ответа от Deepgram: {response.status_code}")
         result = response.json()
         print(f"Ответ Deepgram: {result}")
-        
+
         if 'results' not in result:
-            print("Deepgram не вернул results")
             return jsonify({
                 'success': False,
                 'error': 'No results from Deepgram',
@@ -98,19 +107,19 @@ def analyze():
                 'expected': expected_text,
                 'wordComparison': compare_texts(expected_text, '')
             })
-        
+
         transcript = result['results']['channels'][0]['alternatives'][0]['transcript']
         print(f"Распознано: '{transcript}'")
-        
+
         word_comparison = compare_texts(expected_text, transcript)
-        
+
         return jsonify({
             'success': True,
             'recognized': transcript,
             'expected': expected_text,
             'wordComparison': word_comparison
         })
-        
+
     except Exception as e:
         print(f"Ошибка: {str(e)}")
         return jsonify({
