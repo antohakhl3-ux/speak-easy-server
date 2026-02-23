@@ -13,24 +13,75 @@ def compare_phonemes(expected_word, recognized_word, phonemes):
     Сравнивает ожидаемое слово с распознанными фонемами.
     Возвращает массив булевых значений для каждой буквы expected_word:
     True – буква произнесена неверно, False – верно.
-    Если фонем нет или длины не совпадают, все буквы считаются ошибкой.
     """
     expected_letters = list(expected_word.lower())
-    # Извлекаем символы фонем (без учёта ударений и т.п.)
-    phoneme_symbols = [p['phoneme'] for p in phonemes]
     
-    if len(expected_letters) != len(phoneme_symbols):
+    # Если фонем нет – все буквы считаем ошибкой
+    if not phonemes:
+        print(f"⚠️ Нет фонем для слова {expected_word}")
         return [True] * len(expected_letters)
     
+    # Извлекаем символы фонем и приводим к нижнему регистру
+    phoneme_symbols = [p['phoneme'].lower() for p in phonemes]
+    print(f"🔤 Ожидаемое слово: {expected_word}, буквы: {expected_letters}")
+    print(f"🎤 Распознанные фонемы: {phoneme_symbols}")
+    
+    # Если количество фонем не совпадает с количеством букв – все буквы ошибка
+    if len(expected_letters) != len(phoneme_symbols):
+        print(f"⚠️ Количество букв ({len(expected_letters)}) не совпадает с количеством фонем ({len(phoneme_symbols)})")
+        return [True] * len(expected_letters)
+    
+    # Соответствия русских букв и фонем IPA (упрощённо)
+    # Это приблизительные соответствия, для продакшена нужен полный словарь
+    phoneme_map = {
+        'а': ['a', 'ɐ', 'ʌ'],
+        'б': ['b', 'bʲ'],
+        'в': ['v', 'vʲ'],
+        'г': ['g', 'ɟ'],
+        'д': ['d', 'dʲ'],
+        'е': ['je', 'e', 'ɛ'],
+        'ё': ['jo'],
+        'ж': ['ʐ', 'ʒ'],
+        'з': ['z', 'zʲ'],
+        'и': ['i', 'ɪ'],
+        'й': ['j'],
+        'к': ['k', 'c', 'kʲ'],
+        'л': ['l', 'lʲ'],
+        'м': ['m', 'mʲ'],
+        'н': ['n', 'nʲ'],
+        'о': ['o', 'ɔ', 'ə'],
+        'п': ['p', 'pʲ'],
+        'р': ['r', 'ɾ', 'rʲ'],
+        'с': ['s', 'sʲ'],
+        'т': ['t', 'tʲ'],
+        'у': ['u', 'ʊ'],
+        'ф': ['f', 'fʲ'],
+        'х': ['x', 'ç'],
+        'ц': ['ts'],
+        'ч': ['tɕ'],
+        'ш': ['ʂ', 'ʃ'],
+        'щ': ['ɕː'],
+        'ъ': [''],
+        'ы': ['ɨ'],
+        'ь': [''],
+        'э': ['ɛ'],
+        'ю': ['ju'],
+        'я': ['ja']
+    }
+    
     errors = []
-    for exp_letter, rec_phoneme in zip(expected_letters, phoneme_symbols):
-        # Упрощённое сравнение: считаем, что фонема должна начинаться с той же буквы
-        # Например, для русского "р" фонема может быть "r" или "р" – в Deepgram они используют IPA или свои символы
-        # Для точности лучше использовать фонетический словарь, но для MVP сойдёт
-        if exp_letter != rec_phoneme.lower():
-            errors.append(True)
-        else:
+    for i, (exp_letter, rec_phoneme) in enumerate(zip(expected_letters, phoneme_symbols)):
+        # Получаем возможные варианты фонем для этой буквы
+        possible_phonemes = phoneme_map.get(exp_letter, [exp_letter])
+        
+        # Проверяем, содержится ли распознанная фонема в возможных вариантах
+        if rec_phoneme in possible_phonemes:
             errors.append(False)
+            print(f"✅ Буква '{exp_letter}' (фонема '{rec_phoneme}') – верно")
+        else:
+            errors.append(True)
+            print(f"❌ Буква '{exp_letter}' (фонема '{rec_phoneme}') – ошибка")
+    
     return errors
 
 @app.route('/analyze', methods=['POST'])
@@ -67,7 +118,7 @@ def analyze():
             "punctuate": "true",
             "smart_format": "true",
             "words": "true",
-            "phonemes": "true"          # ключевой параметр
+            "phonemes": "true"
         }
 
         client = httpx.Client(verify=False)  # для теста, в проде лучше с verify=True
@@ -82,7 +133,7 @@ def analyze():
 
         print(f"Статус ответа от Deepgram: {response.status_code}")
         result = response.json()
-        print(f"Ответ Deepgram: {result}")
+        # print(f"Ответ Deepgram: {result}")  # закомментировано для чистоты
 
         if 'results' not in result:
             return jsonify({
@@ -127,6 +178,7 @@ def analyze():
         for i, exp_word in enumerate(expected_words):
             if i < len(words_data):
                 phonemes = words_data[i].get('phonemes', [])
+                print(f"📊 Слово '{exp_word}', получено фонем: {len(phonemes)}")
                 if phonemes:
                     errors = compare_phonemes(exp_word, words_data[i]['word'], phonemes)
                 else:
