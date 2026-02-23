@@ -11,15 +11,18 @@ DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 app = Flask(__name__)
 
 def normalize_word(word):
-    """Удаляет знаки препинания и приводит к нижнему регистру"""
-    return re.sub(r'[^\w\s]', '', word).lower()
+    """
+    Удаляет знаки препинания.
+    Если слово состоит только из цифр, возвращает как есть.
+    Иначе приводит к нижнему регистру.
+    """
+    word = re.sub(r'[^\w\s]', '', word)
+    if word.isdigit():
+        return word
+    return word.lower()
 
 def align_words(expected, recognized):
-    """
-    Возвращает массив булевых значений для expected:
-    True – буква произнесена неверно, False – верно.
-    Используется выравнивание Нидлмана-Вунша.
-    """
+    """Выравнивание Нидлмана-Вунша для побуквенного сравнения."""
     if not recognized:
         return [True] * len(expected)
     
@@ -58,10 +61,9 @@ def align_words(expected, recognized):
     return errors
 
 def compare_phonemes(expected_word, recognized_word):
-    """Сравнивает ожидаемое и распознанное слово побуквенно через выравнивание"""
-    expected_word_norm = normalize_word(expected_word)
-    recognized_word_norm = normalize_word(recognized_word) if recognized_word else ""
-    return align_words(expected_word_norm, recognized_word_norm)
+    expected_norm = normalize_word(expected_word)
+    recognized_norm = normalize_word(recognized_word) if recognized_word else ""
+    return align_words(expected_norm, recognized_norm)
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
@@ -132,7 +134,7 @@ def analyze():
         print(f"Ожидаемые слова: {expected_words}")
         print(f"Распознанные слова: {recognized_words}")
 
-        # Сравнение на уровне слов с нормализацией
+        # Сравнение слов
         word_comparison = []
         for i, exp_word in enumerate(expected_words):
             if i < len(recognized_words):
@@ -146,7 +148,6 @@ def analyze():
                 "recognized": rec_word,
                 "error": is_error
             })
-        # Лишние распознанные слова
         for i in range(len(expected_words), len(recognized_words)):
             word_comparison.append({
                 "expected": "",
