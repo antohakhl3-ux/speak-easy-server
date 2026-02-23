@@ -1,6 +1,8 @@
 from flask import Flask, request, jsonify
 import os
 import httpx
+import re
+import numpy as np
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -8,90 +10,58 @@ DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 
 app = Flask(__name__)
 
-# Расширенный словарь соответствия русских букв и фонем IPA (на основе данных Deepgram)
-PHONEME_MAP = {
-    'а': ['a', 'ɐ', 'ʌ', 'ɑ'],
-    'б': ['b', 'bʲ', 'b̪'],
-    'в': ['v', 'vʲ', 'ʋ'],
-    'г': ['g', 'ɟ', 'ɣ'],
-    'д': ['d', 'dʲ', 'd̪'],
-    'е': ['je', 'e', 'ɛ', 'ɪ̯e', 'jɛ'],
-    'ё': ['jo', 'ʲo', 'jɵ'],
-    'ж': ['ʐ', 'ʒ', 'ʐː'],
-    'з': ['z', 'zʲ', 'z̪'],
-    'и': ['i', 'ɪ', 'ɨ'],
-    'й': ['j', 'ɪ̯'],
-    'к': ['k', 'c', 'kʲ', 'k̟'],
-    'л': ['l', 'lʲ', 'ɫ', 'ɬ'],
-    'м': ['m', 'mʲ', 'ɱ'],
-    'н': ['n', 'nʲ', 'n̪'],
-    'о': ['o', 'ɔ', 'ɐ', 'ə', 'ɵ'],
-    'п': ['p', 'pʲ', 'p̪'],
-    'р': ['r', 'ɾ', 'rʲ', 'r̝'],
-    'с': ['s', 'sʲ', 's̪'],
-    'т': ['t', 'tʲ', 't̪'],
-    'у': ['u', 'ʊ', 'ɵ', 'ʉ'],
-    'ф': ['f', 'fʲ', 'ɸ'],
-    'х': ['x', 'ç', 'χ', 'ħ'],
-    'ц': ['ts', 't͡s'],
-    'ч': ['tɕ', 't͡ɕ'],
-    'ш': ['ʂ', 'ʃ', 'ʂː'],
-    'щ': ['ɕː', 'ɕ', 'ʃt͡ʃ'],
-    'ъ': ['', 'ˠ'],  # твёрдый знак не имеет звука, но может влиять на предыдущий
-    'ы': ['ɨ', 'ɯ'],
-    'ь': ['', 'ʲ'],  # мягкий знак – палатализация
-    'э': ['ɛ', 'e'],
-    'ю': ['ju', 'ʲu', 'jʉ'],
-    'я': ['ja', 'ʲa', 'jɐ']
-}
+def normalize_word(word):
+    """Удаляет знаки препинания и приводит к нижнему регистру"""
+    return re.sub(r'[^\w\s]', '', word).lower()
 
-def compare_phonemes(expected_word, recognized_word, phonemes):
+def align_words(expected, recognized):
     """
-    Сравнивает ожидаемое слово с распознанными фонемами.
-    Возвращает массив булевых значений для каждой буквы expected_word:
+    Возвращает массив булевых значений для expected:
     True – буква произнесена неверно, False – верно.
+    Используется выравнивание Нидлмана-Вунша.
     """
-    expected_letters = list(expected_word.lower())
+    if not recognized:
+        return [True] * len(expected)
     
-    if not phonemes:
-        print(f"⚠️ Нет фонем для слова {expected_word}")
-        return [True] * len(expected_letters)
+    n, m = len(expected), len(recognized)
+    dp = np.zeros((n+1, m+1), dtype=int)
+    for i in range(n+1):
+        dp[i][0] = i
+    for j in range(m+1):
+        dp[0][j] = j
     
-    # Извлекаем символы фонем (иногда они могут быть с диакритиками, например "rʲ")
-    phoneme_symbols = [p['phoneme'].lower() for p in phonemes]
-    print(f"🔤 Ожидаемое слово: {expected_word}, буквы: {expected_letters}")
-    print(f"🎤 Распознанные фонемы: {phoneme_symbols}")
+    for i in range(1, n+1):
+        for j in range(1, m+1):
+            cost = 0 if expected[i-1] == recognized[j-1] else 1
+            dp[i][j] = min(
+                dp[i-1][j-1] + cost,
+                dp[i-1][j] + 1,
+                dp[i][j-1] + 1
+            )
     
-    # Если количество фонем не совпадает с количеством букв – все буквы ошибка
-    if len(expected_letters) != len(phoneme_symbols):
-        print(f"⚠️ Количество букв ({len(expected_letters)}) != фонем ({len(phoneme_symbols)})")
-        return [True] * len(expected_letters)
-    
+    i, j = n, m
     errors = []
-    for i, (exp_letter, rec_phoneme) in enumerate(zip(expected_letters, phoneme_symbols)):
-        # Получаем возможные варианты фонем для этой буквы
-        possible_phonemes = PHONEME_MAP.get(exp_letter, [exp_letter])
-        
-        # Проверяем, содержится ли распознанная фонема в возможных вариантах
-        # Учитываем, что фонема может начинаться с ожидаемого символа (например, "rʲ" подходит для "р")
-        match = False
-        for possible in possible_phonemes:
-            if rec_phoneme.startswith(possible) or possible.startswith(rec_phoneme):
-                match = True
-                break
-            # Также сравниваем без диакритик
-            if rec_phoneme[0] == possible[0]:
-                match = True
-                break
-        
-        if match:
-            errors.append(False)
-            print(f"✅ Буква '{exp_letter}' (фонема '{rec_phoneme}') – верно")
-        else:
+    while i > 0 or j > 0:
+        if i > 0 and j > 0 and dp[i][j] == dp[i-1][j-1] + (0 if expected[i-1] == recognized[j-1] else 1):
+            errors.append(expected[i-1] != recognized[j-1])
+            i -= 1
+            j -= 1
+        elif i > 0 and dp[i][j] == dp[i-1][j] + 1:
             errors.append(True)
-            print(f"❌ Буква '{exp_letter}' (фонема '{rec_phoneme}') – ошибка")
+            i -= 1
+        else:
+            j -= 1
     
+    errors.reverse()
+    while len(errors) < n:
+        errors.append(True)
     return errors
+
+def compare_phonemes(expected_word, recognized_word):
+    """Сравнивает ожидаемое и распознанное слово побуквенно через выравнивание"""
+    expected_word_norm = normalize_word(expected_word)
+    recognized_word_norm = normalize_word(recognized_word) if recognized_word else ""
+    return align_words(expected_word_norm, recognized_word_norm)
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
@@ -130,7 +100,7 @@ def analyze():
             "phonemes": "true"
         }
 
-        client = httpx.Client(verify=False)  # для теста, в проде лучше с verify=True
+        client = httpx.Client(verify=False)
         response = client.post(
             url,
             headers=headers,
@@ -159,12 +129,15 @@ def analyze():
         expected_words = expected_text.split()
         recognized_words = transcript.split()
 
-        # Сравнение на уровне слов
+        print(f"Ожидаемые слова: {expected_words}")
+        print(f"Распознанные слова: {recognized_words}")
+
+        # Сравнение на уровне слов с нормализацией
         word_comparison = []
         for i, exp_word in enumerate(expected_words):
             if i < len(recognized_words):
                 rec_word = recognized_words[i]
-                is_error = exp_word.lower() != rec_word.lower()
+                is_error = normalize_word(exp_word) != normalize_word(rec_word)
             else:
                 rec_word = ""
                 is_error = True
@@ -173,6 +146,7 @@ def analyze():
                 "recognized": rec_word,
                 "error": is_error
             })
+        # Лишние распознанные слова
         for i in range(len(expected_words), len(recognized_words)):
             word_comparison.append({
                 "expected": "",
@@ -180,15 +154,13 @@ def analyze():
                 "error": True
             })
 
-        # Детали по фонемам
+        # Детали по буквам
         phoneme_details = []
         for i, exp_word in enumerate(expected_words):
-            if i < len(words_data):
-                phonemes = words_data[i].get('phonemes', [])
-                if phonemes:
-                    errors = compare_phonemes(exp_word, words_data[i]['word'], phonemes)
-                else:
-                    errors = [True] * len(exp_word)
+            if i < len(recognized_words):
+                rec_word = recognized_words[i]
+                errors = compare_phonemes(exp_word, rec_word)
+                print(f"Слово '{exp_word}' vs '{rec_word}': ошибки {errors}")
             else:
                 errors = [True] * len(exp_word)
             phoneme_details.append({
