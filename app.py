@@ -8,32 +8,30 @@ DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 
 app = Flask(__name__)
 
-def compare_texts(expected, recognized):
-    if not recognized:
-        expected_words = expected.split()
-        return [{"expected": w, "recognized": "", "error": True} for w in expected_words]
-    expected_words = expected.split()
-    recognized_words = recognized.split()
-    result = []
-    for i, exp_word in enumerate(expected_words):
-        if i < len(recognized_words):
-            rec_word = recognized_words[i]
-            is_error = exp_word.lower() != rec_word.lower()
+def compare_phonemes(expected_word, recognized_word, phonemes):
+    """
+    Сравнивает ожидаемое слово с распознанными фонемами.
+    Возвращает массив булевых значений для каждой буквы expected_word:
+    True – буква произнесена неверно, False – верно.
+    Если фонем нет или длины не совпадают, все буквы считаются ошибкой.
+    """
+    expected_letters = list(expected_word.lower())
+    # Извлекаем символы фонем (без учёта ударений и т.п.)
+    phoneme_symbols = [p['phoneme'] for p in phonemes]
+    
+    if len(expected_letters) != len(phoneme_symbols):
+        return [True] * len(expected_letters)
+    
+    errors = []
+    for exp_letter, rec_phoneme in zip(expected_letters, phoneme_symbols):
+        # Упрощённое сравнение: считаем, что фонема должна начинаться с той же буквы
+        # Например, для русского "р" фонема может быть "r" или "р" – в Deepgram они используют IPA или свои символы
+        # Для точности лучше использовать фонетический словарь, но для MVP сойдёт
+        if exp_letter != rec_phoneme.lower():
+            errors.append(True)
         else:
-            rec_word = ""
-            is_error = True
-        result.append({
-            "expected": exp_word,
-            "recognized": rec_word,
-            "error": is_error
-        })
-    for i in range(len(expected_words), len(recognized_words)):
-        result.append({
-            "expected": "",
-            "recognized": recognized_words[i],
-            "error": True
-        })
-    return result
+            errors.append(False)
+    return errors
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
@@ -43,11 +41,6 @@ def analyze():
     audio_file = request.files['audio']
     expected_text = request.form.get('expected_text', '')
     language = request.form.get('language', 'ru')
-
-    # Список поддерживаемых языков Deepgram (можно расширить)
-    supported_languages = ['ru', 'en', 'es', 'fr', 'de', 'it', 'pt', 'zh', 'ja', 'ko']
-    if language not in supported_languages:
-        language = 'en'
 
     try:
         audio_data = audio_file.read()
@@ -59,7 +52,8 @@ def analyze():
                 'error': 'Audio file too small',
                 'recognized': '',
                 'expected': expected_text,
-                'wordComparison': compare_texts(expected_text, '')
+                'wordComparison': [],
+                'phonemeDetails': []
             })
 
         url = "https://api.deepgram.com/v1/listen"
@@ -71,21 +65,12 @@ def analyze():
             "model": "nova-2",
             "language": language,
             "punctuate": "true",
-            "smart_format": "true"
+            "smart_format": "true",
+            "words": "true",
+            "phonemes": "true"          # ключевой параметр
         }
 
-        # Для продакшена лучше не отключать SSL, но для теста можно
-        async_client = httpx.AsyncClient(verify=False)
-        response = async_client.post(
-            url,
-            headers=headers,
-            params=params,
-            content=audio_data,
-            timeout=30
-        )
-        # В httpx нет асинхронного клиента в синхронном коде? Используем обычный client
-        # Упростим:
-        client = httpx.Client(verify=False)
+        client = httpx.Client(verify=False)  # для теста, в проде лучше с verify=True
         response = client.post(
             url,
             headers=headers,
@@ -105,30 +90,65 @@ def analyze():
                 'error': 'No results from Deepgram',
                 'recognized': '',
                 'expected': expected_text,
-                'wordComparison': compare_texts(expected_text, '')
+                'wordComparison': [],
+                'phonemeDetails': []
             })
 
         transcript = result['results']['channels'][0]['alternatives'][0]['transcript']
-        print(f"Распознано: '{transcript}'")
+        words_data = result['results']['channels'][0]['alternatives'][0].get('words', [])
 
-        word_comparison = compare_texts(expected_text, transcript)
+        # Разбиваем ожидаемый текст на слова
+        expected_words = expected_text.split()
+        recognized_words = transcript.split()
+
+        # Сравнение на уровне слов (как было)
+        word_comparison = []
+        for i, exp_word in enumerate(expected_words):
+            if i < len(recognized_words):
+                rec_word = recognized_words[i]
+                is_error = exp_word.lower() != rec_word.lower()
+            else:
+                rec_word = ""
+                is_error = True
+            word_comparison.append({
+                "expected": exp_word,
+                "recognized": rec_word,
+                "error": is_error
+            })
+        for i in range(len(expected_words), len(recognized_words)):
+            word_comparison.append({
+                "expected": "",
+                "recognized": recognized_words[i],
+                "error": True
+            })
+
+        # Подготовка детальной информации по фонемам
+        phoneme_details = []
+        for i, exp_word in enumerate(expected_words):
+            if i < len(words_data):
+                phonemes = words_data[i].get('phonemes', [])
+                if phonemes:
+                    errors = compare_phonemes(exp_word, words_data[i]['word'], phonemes)
+                else:
+                    errors = [True] * len(exp_word)
+            else:
+                errors = [True] * len(exp_word)  # слово не распознано – все буквы ошибка
+            phoneme_details.append({
+                "word": exp_word,
+                "errorMask": errors
+            })
 
         return jsonify({
             'success': True,
             'recognized': transcript,
             'expected': expected_text,
-            'wordComparison': word_comparison
+            'wordComparison': word_comparison,
+            'phonemeDetails': phoneme_details
         })
 
     except Exception as e:
         print(f"Ошибка: {str(e)}")
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'recognized': '',
-            'expected': expected_text,
-            'wordComparison': compare_texts(expected_text, '')
-        }), 500
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5001)
