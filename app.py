@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 app = Flask(__name__)
 
@@ -65,6 +66,9 @@ def compare_phonemes(expected_word, recognized_word):
     recognized_norm = normalize_word(recognized_word) if recognized_word else ""
     return align_words(expected_norm, recognized_norm)
 
+# ============================================================
+# ЭНДПОИНТ 1: Анализ аудио через Deepgram
+# ============================================================
 @app.route('/analyze', methods=['POST'])
 def analyze():
     if 'audio' not in request.files:
@@ -180,6 +184,82 @@ def analyze():
     except Exception as e:
         print(f"Ошибка: {str(e)}")
         return jsonify({'error': str(e)}), 500
+
+
+# ============================================================
+# ЭНДПОИНТ 2: Генерация текста через Groq API
+# ============================================================
+@app.route('/generate_text', methods=['POST'])
+def generate_text():
+    """Генерирует текст с частым использованием заданной буквы через Groq API"""
+    
+    if not GROQ_API_KEY:
+        return jsonify({'success': False, 'error': 'Groq API key not configured'}), 500
+    
+    data = request.json
+    sound = data.get('sound', 'р')
+    language = data.get('language', 'ru')
+    
+    # Промпты для разных языков
+    prompts = {
+        'ru': f"Напиши 3 коротких предложения на русском языке, где часто встречается буква '{sound}'. Текст должен быть осмысленным, интересным и естественным. Верни ТОЛЬКО текст, без пояснений.",
+        'en': f"Write 3 short sentences in English where the letter '{sound}' appears frequently. The text should be meaningful, interesting and natural. Return ONLY the text, no explanations.",
+        'es': f"Escribe 3 oraciones cortas en español donde la letra '{sound}' aparezca con frecuencia. El texto debe ser significativo, interesante y natural. Devuelve SOLO el texto, sin explicaciones.",
+        'fr': f"Écris 3 phrases courtes en français où la lettre '{sound}' apparaît fréquemment. Le texte doit être significatif, intéressant et naturel. Retourne SEULEMENT le texte, sans explications.",
+        'de': f"Schreibe 3 kurze Sätze auf Deutsch, in denen der Buchstabe '{sound}' häufig vorkommt. Der Text sollte sinnvoll, interessant und natürlich sein. Gib NUR den Text zurück, ohne Erklärungen.",
+        'it': f"Scrivi 3 brevi frasi in italiano dove la lettera '{sound}' appare frequentemente. Il testo deve essere significativo, interessante e naturale. Restituisci SOLO il testo, senza spiegazioni.",
+        'pt': f"Escreva 3 frases curtas em português onde a letra '{sound}' aparece com frequência. O texto deve ser significativo, interessante e natural. Retorne APENAS o texto, sem explicações.",
+        'zh': f"用中文写3个短句，其中经常出现'{sound}'这个字母。文本要有意义、有趣且自然。只返回文本，不要解释。",
+        'ja': f"日本語で3つの短い文を書いてください。文字'{sound}'が頻繁に現れるようにしてください。テキストは意味があり、興味深く、自然でなければなりません。説明なしでテキストのみを返してください。",
+        'ko': f"한국어로 3개의 짧은 문장을 작성하세요. '{sound}' 글자가 자주 나타나야 합니다. 텍스트는 의미 있고 흥미롭고 자연스러워야 합니다. 설명 없이 텍스트만 반환하세요."
+    }
+    
+    prompt = prompts.get(language, prompts['en'])
+    
+    try:
+        # Запрос к Groq API
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "mixtral-8x7b-32768",
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant that generates practice texts for pronunciation training."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 300
+        }
+        
+        client = httpx.Client(verify=False)
+        response = client.post(url, headers=headers, json=payload, timeout=30)
+        client.close()
+        
+        if response.status_code == 200:
+            result = response.json()
+            generated_text = result['choices'][0]['message']['content'].strip()
+            
+            # Очищаем от кавычек, если есть
+            generated_text = generated_text.strip('"\'')
+            
+            return jsonify({
+                'success': True,
+                'text': generated_text,
+                'sound': sound,
+                'language': language
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': f"Groq API error: {response.status_code} - {response.text}"
+            }), response.status_code
+            
+    except Exception as e:
+        print(f"Ошибка генерации текста: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5001)
