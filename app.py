@@ -82,7 +82,7 @@ def analyze():
         audio_data = audio_file.read()
         print(f"Размер аудио: {len(audio_data)} байт, язык: {language}")
 
-        if len(audio_data) < 200:
+        if len(audio_data) < 1:
             return jsonify({
                 'success': False,
                 'error': 'Audio file too small',
